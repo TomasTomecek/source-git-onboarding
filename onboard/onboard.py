@@ -17,7 +17,7 @@ from survey import CentosPkgValidatedConvert
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=getenv("LOGLEVEL", "INFO"))
 
-C8S_BRANCHES = ["c8s", "c8s-stream-rhel", "c8"]
+C8S_BRANCHES = ["c8s", "c8s-stream-rhel8", "c8s-stream-rhel", "c8"]
 work_dir = Path("/tmp/playground")
 
 
@@ -43,8 +43,8 @@ class OnboardCentosPKG:
         project = self.service.project_create(
             repo=pkg_name,
             namespace=self.namespace,
-            description=f"Source git repo for {pkg_name}.\n"
-            f"For more info see: http://packit.dev/docs/source-git/",
+            description=f"Source repo for CentOS Stream 8 package \"{pkg_name}\". "
+            "You can contribute here by following https://wiki.centos.org/Contribute/CentOSStream/",
         )
         logger.info(f"Project created: {project.get_web_url()}")
 
@@ -72,13 +72,25 @@ class OnboardCentosPKG:
             return C8S_BRANCHES[0]
         service = PagureService(token=dg_token, instance_url="https://git.centos.org/")
         dg_project = service.get_project(namespace="rpms", repo=pkg_name)
+        if not dg_project.exists():
+            logger.error(f"Project {dg_project} does not exist.")
+            return
         branches = dg_project.get_branches()
         for b in C8S_BRANCHES:
             if b in branches:
                 return b
         else:
-            logger.error(f"No {C8S_BRANCHES} branch in dist-git repo of {pkg_name}.")
-            return None
+            c8_branches = [b for b in branches
+                           if (
+                                   (b.startswith("c8-") and not b.startswith("c8-beta"))
+                                   or b.startswith("c8s-"))
+                           and not "sig" in b]  # no c8-beta
+            if c8_branches:
+                c8_branches.sort(reverse=True)  # c8s < c8; we want c8s something
+                logger.info(f"Using: {c8_branches[0]}")
+                return c8_branches[0]
+        logger.error(f"No {C8S_BRANCHES} branch in dist-git repo of {pkg_name}: {branches}.")
+        return None
 
     def run(self, pkg_name: str, branch: str, skip_build: bool = False):
         action = "Updating" if self.update else "Onboarding"
@@ -93,39 +105,45 @@ class OnboardCentosPKG:
         )
 
         project = self.service.get_project(namespace=self.namespace, repo=pkg_name)
-        sg_exists = False
         if project.exists():
-            logger.info(f"Source repo for {pkg_name} already exists")
-            if branch in project.get_branches():
-                logger.info(f"Branch {branch} already exists")
-                if (
-                    isinstance(project, GitlabProject)
-                    and project.gitlab_repo.visibility == "private"
-                ):
-                    logger.info("Making the repository public.")
-                    project.gitlab_repo.visibility = "public"
-                    project.gitlab_repo.save()
-                if not self.update:
-                    return
-            sg_exists = True
+            logger.info(f"Project {project} already exists.")
+            branches = project.get_branches()
+            logger.info(f"Project branches: {branches}.")
+            # if set(C8S_BRANCHES).intersection(branches):
+            #     logger.info(f"This repo was already processed.")
+            return
+        # sg_exists = False
+        #     logger.info(f"Source repo for {pkg_name} already exists")
+        #     if branch in project.get_branches():
+        #         logger.info(f"Branch {branch} already exists")
+        #         if (
+        #             isinstance(project, GitlabProject)
+        #             and project.gitlab_repo.visibility == "private"
+        #         ):
+        #             logger.info("Making the repository public.")
+        #             project.gitlab_repo.visibility = "public"
+        #             project.gitlab_repo.save()
+        #         if not self.update:
+        #             return
+        #     sg_exists = True
         converter = CentosPkgValidatedConvert(
             package_name=pkg_name, distgit_branch=branch
         )
-        converter.run(skip_build=skip_build, clone_sg=sg_exists)
+        converter.run(skip_build=skip_build, clone_sg=False)
         logger.info(f"converter.result: {converter.result}")
+        return
         with open("/in/result.yml", "a+") as out:
             out.write(f"{converter.result}\n")
         if (
             not converter.result
             or "error" in converter.result
-            or converter.result.get("conditional_patch")
         ):
             logger.warning(f"{action} aborted for {pkg_name}:")
             return
         logger.info(f"{action} successful for {pkg_name}:")
-        if not project.exists():
-            project = self.create_sg_repo(pkg_name)
+        project = self.create_sg_repo(pkg_name)
 
+        # TODO: make this configurable
         git_repo = Repo(converter.src_package_dir)
         git_repo.create_remote("packit", project.get_git_urls()["ssh"])
         git_repo.git.push("packit", branch)

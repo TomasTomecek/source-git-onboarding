@@ -1,7 +1,6 @@
-FROM localhost/dist2src
+FROM quay.io/packit/dist2src:dev
 
-RUN dnf -y install epel-release && dnf -y install mock && \
-    pip3 install git+git://github.com/packit/ogr.git --upgrade
+RUN dnf -y install epel-release && dnf -y install mock python3-ogr packit
 
 COPY pkg_survey/survey.py onboard/run-onboard.sh onboard/onboard.py master-branches/* /workdir
 

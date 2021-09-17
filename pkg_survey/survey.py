@@ -38,9 +38,11 @@ class CentosPkgValidatedConvert:
         self.d2s: Optional[Dist2Src] = None
 
     def clone(self, git_url: str, dir: Path) -> bool:
+        git_repo_path = dir / self.package_name
         try:
-            git.Git(dir).clone(git_url)
-            r = git.Repo(dir / self.package_name)
+            if not git_repo_path.is_dir():
+                git.Git(dir).clone(git_url)
+            r = git.Repo(git_repo_path)
             r.git.checkout(self.distgit_branch)
             return True
         except Exception as ex:
@@ -149,35 +151,23 @@ class CentosPkgValidatedConvert:
             self.cleanup()
 
 
-def fetch_centos_pkgs_info(page: str):
+def get_centos_packages() -> List[str]:
     i = 0
+    url = "https://git.centos.org/api/0/projects?namespace=rpms&owner=centosrcm&short=true"
+    packages: List[str] = []
     while True:
-        logger.info(page)
-        r = requests.get(page)
+        logger.info(url)
+        r = requests.get(url)
         for p in r.json()["projects"]:
-            logger.info(f"Processing package: {p['name']}")
-            converter = CentosPkgValidatedConvert(p, BRANCH)
-            converter.run(cleanup=True)
-            if converter.result:
-                logger.info(converter.result)
-                result.append(converter.result)
-        page = r.json()["pagination"]["next"]
-        if not page:
+            package_name = p["name"]
+            logger.info(f"Processing package: {package_name}")
+            packages.append(package_name)
+        url = r.json()["pagination"]["next"]
+        if not url:
             break
         i += 1
-        if not (i % 2):
-            with open("intermediate-result.yml", "w") as outfile:
-                yaml.dump(result, outfile)
+    return packages
 
 
 if __name__ == "__main__":
-    if not work_dir.is_dir():
-        logger.warning("Your work_dir is missing.")
-    rpms_dir.mkdir(exist_ok=True)
-    src_dir.mkdir(exist_ok=True)
-    Path("mock_error_builds").mkdir(exist_ok=True)
-    fetch_centos_pkgs_info(
-        "https://git.centos.org/api/0/projects?namespace=rpms&owner=centosrcm&short=true"
-    )
-    with open("result-data.yml", "w") as outfile:
-        yaml.dump(result, outfile)
+    Path("all-centos-packages.yml").write_text(yaml.safe_dump(get_centos_packages()))
